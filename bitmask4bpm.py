@@ -19,7 +19,37 @@ BITS = {
     "blinking": BLINKING,
 }
 
+def load_image(path):
+    return np.squeeze(np.load(path)["arr_0"]).astype(np.float32)
 
+
+def camera_settings(path):
+    name = os.path.basename(path)
+    if "nsv455" in name:
+        return (6388, 9576), 3, 4
+    if "nsv571" in name:
+        return (4134, 6120), 2, 2
+    raise ValueError(name)
+    
+
+def max_percentile(nx, ny, camera_name):
+    if "nsv455" in camera_name:
+        return min(99.99999, 99.99 + 20 * (nx * ny) / 32 * 0.0005)
+    return min(99.99999, 99.99 + 20 * (nx * ny) / 16 * 0.0005)
+
+
+def keep_good_images(paths):
+    keep = []
+    bad = []
+    for path in paths:
+        image = load_image(path)
+        if np.mean(image) > 5000 or np.sum(image) < 1:
+            bad.append(path)
+        else:
+            keep.append(path)
+    return keep, bad
+
+########################################################################
 
 def make_bitmask(img_paths, output_path, target_n=None):
     img_paths = sorted(img_paths)
@@ -101,3 +131,54 @@ def make_bitmask(img_paths, output_path, target_n=None):
             p1 = np.percentile(std1, maxp)
             p2 = np.percentile(std2, maxp)
             blinking = (std1 > p1) & (std2 > p2)
+
+            tile = np.zeros(hy * wx, dtype=np.uint8)
+            tile[sandp] |= SALT_PEPPER
+            tile[high] |= HIGH
+            tile[low] |= LOW
+            tile[stuck] |= STUCK
+            tile[blinking] |= BLINKING
+
+            bitmask[
+                j * hy:(j + 1) * hy,
+                k * wx:(k + 1) * wx
+            ] = tile.reshape(hy, wx)
+
+    counts = np.array(
+        [np.count_nonzero(bitmask & bit) for bit in BITS.values()],
+        dtype=np.int64
+    )
+
+    names = np.array(list(BITS.keys()))
+    bits = np.array(list(BITS.values()), dtype=np.uint8)
+    bpm = bitmask == 0
+
+    np.savez_compressed(
+        output_path,
+        bitmask=bitmask,
+        bpm=bpm,
+        names=names,
+        bits=bits,
+        counts=counts,
+        n_frames=np.int64(n),
+        bad_images=np.array(bad_images),
+        input_images=np.array(img_paths),
+    )
+
+    return bitmask
+
+####################################################################################################
+
+def decode_pixel(bitmask, row, column):
+    value = int(bitmask[row, column])
+    categories = [
+        name for name, bit in BITS.items()
+        if value & int(bit)
+    ]
+    return value, categories
+
+
+bitmask = make_bitmask(paths, output_path, target_n=target_n)
+
+blinking = (bitmask & 16) != 0
+
